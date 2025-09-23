@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/file.h>
+#include<unistd.h>
 
 #define DATAFILE "data.db"
 
@@ -22,11 +24,19 @@ void set(const char *key, const char *value)
         exit(1); 
     }
 
+    //Acquire lock
+    if (flock(fd, LOCK_EX) == -1) 
+    { 
+        perror("flock"); exit(1); 
+    }
+    sleep(5);
+
     //Error with write syscall
     if(write(fd, buffer, len) != len) 
     { 
         perror("write"); 
     }
+    flock(fd, LOCK_UN); //Release lock
     close(fd);
 }
 
@@ -40,6 +50,12 @@ void get(const char *key)
     { 
         perror("open"); 
         exit(1); 
+    }
+
+    //Acquire lock
+    if (flock(fd, LOCK_EX) == -1) 
+    { 
+        perror("flock"); exit(1); 
     }
 
     ssize_t n;
@@ -79,6 +95,7 @@ void get(const char *key)
 
     //If not found
     fprintf(stderr, "Key not found\n");
+    flock(fd, LOCK_UN); //Release lock
     close(fd);
 }
 
