@@ -5,40 +5,95 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/file.h>
-#include<unistd.h>
+#include <unistd.h>
 
 #define DATAFILE "data.db"
 
-//Set new key and value in our database
-void set(const char *key, const char *value) 
+//Set new key in database
+void set(const char *key, const char *value)
 {
-    //Data Format - key:value\n
-    char buffer[1024];
-    int len = snprintf(buffer, sizeof(buffer), "%s:%s\n", key, value);
-    int fd = open(DATAFILE, O_WRONLY | O_APPEND | O_CREAT, 0666);
-
-    //Error opening file
-    if(fd < 0) 
-    { 
-        perror("open"); 
-        exit(1); 
+    int fd = open(DATAFILE, O_RDWR | O_CREAT, 0666);
+    if (fd < 0) 
+    {
+        perror("open");
+        exit(1);
     }
 
-    //Acquire lock
     if (flock(fd, LOCK_EX) == -1) 
-    { 
-        perror("flock"); exit(1); 
+    {
+        perror("flock");
+        close(fd);
+        exit(1);
     }
-    sleep(5);
 
-    //Error with write syscall
-    if(write(fd, buffer, len) != len) 
-    { 
-        perror("write"); 
+    //Read the whole file
+    off_t size = lseek(fd, 0, SEEK_END);
+    if (size == -1) { perror("lseek"); exit(1); }
+    lseek(fd, 0, SEEK_SET);
+
+    char *content = malloc(size + 1);
+    if (!content) { perror("malloc"); exit(1); }
+
+    ssize_t n = read(fd, content, size);
+    if (n < 0) { perror("read"); exit(1); }
+    content[n] = '\0';
+
+    //Build the new content
+    char buffer[1024];
+    int replaced = 0;
+    char *out = NULL;
+    size_t out_len = 0;
+
+    char *line = strtok(content, "\n");
+    while (line) 
+    {
+        char *colon = strchr(line, ':');
+        if (colon) 
+        {
+            *colon = '\0';
+            if (strcmp(line, key) == 0) 
+            {
+                //Replace value if it already exists
+                int len = asprintf(&out, "%s%s:%s\n", out ? out : "", key, value);
+                out_len = len;
+                replaced = 1;
+            } 
+            else 
+            {
+                int len = asprintf(&out, "%s%s:%s\n", out ? out : "", line, colon + 1);
+                out_len = len;
+            }
+        }
+        line = strtok(NULL, "\n");
     }
-    flock(fd, LOCK_UN); //Release lock
+
+    // If key not found, append new entry
+    if (!replaced) 
+    {
+        int len = asprintf(&out, "%s%s:%s\n", out ? out : "", key, value);
+        out_len = len;
+    }
+
+    // Truncate and rewrite
+    if (ftruncate(fd, 0) == -1) 
+    {
+        perror("ftruncate");
+        exit(1);
+    }
+    lseek(fd, 0, SEEK_SET);
+
+    if (write(fd, out, out_len) != out_len) 
+    {
+        perror("write");
+    }
+
+    free(content);
+    free(out);
+
+    flock(fd, LOCK_UN);
     close(fd);
 }
+
 
 void get(const char *key) 
 {
