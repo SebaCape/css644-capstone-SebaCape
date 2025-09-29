@@ -6,8 +6,38 @@
 #include <errno.h>
 #include <sys/file.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #define DATAFILE "data.db"
+
+void size_command(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) 
+    {
+        perror("fork");
+        exit(1);
+    }
+
+    if (pid == 0) 
+    {
+        //Child: replace this process with `wc -c data.db`
+        execlp("wc", "wc", "-c", DATAFILE, (char *)NULL);
+        //If execlp returns, exec failed
+        perror("execlp");
+        _exit(1);
+    } 
+    else 
+    {
+        //Parent: wait for the child to finish
+        int status;
+        if (waitpid(pid, &status, 0) < 0) 
+        {
+            perror("waitpid");
+            exit(1);
+        }
+    }
+}
 
 //Set new key in database
 void set(const char *key, const char *value)
@@ -174,6 +204,11 @@ int main(int argc, char *argv[])
     else if(strcmp(argv[1], "get") == 0 && argc == 3) 
     {
         get(argv[2]);
+    }
+
+    else if(strcmp(argv[1], "size") == 0)
+    {
+        size_command();
     }
 
     //Invalid input
