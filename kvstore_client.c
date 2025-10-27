@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define SOCKET_PATH "/tmp/db_socket"
 #define BUF_SIZE 1024
@@ -44,7 +45,25 @@ int main(void)
         if(strncmp(buf, "quit", 4) == 0) 
             break;
 
-        // Send command to server
+        //Handle compact by sending signal to server
+        if (strncmp(buf, "compact", 7) == 0) 
+        {
+        FILE *pidf = fopen("server.pid", "r");
+            if (!pidf) 
+            {
+                perror("open pid");
+                continue;
+            }
+
+            int pid;
+            fscanf(pidf, "%d", &pid);
+            fclose(pidf);
+            kill(pid, SIGUSR1);
+            printf("Sent SIGUSR1 to server (PID %d)\n", pid);
+            continue;  //Skip socket writing
+        }
+
+        //Send commands to server
         write(sock, buf, strlen(buf));
     }
 

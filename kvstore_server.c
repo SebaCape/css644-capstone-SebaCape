@@ -6,14 +6,25 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
 
 #define SOCKET_PATH "/tmp/db_socket"
 #define BUF_SIZE 1024
 
-//Explicit function declaration
+//Function signature declarations
 void set(const char *key, const char *value);
 void get(const char *key);
 void size_command(void);
+void compact(void);
+
+atomic_int compact_requested = 0;
+
+void sigusr1_handler(int sig) 
+{
+    (void)sig;
+    compact_requested = 1;
+}
 
 //Handle a single client connection
 void handle_client(int client_fd) 
@@ -95,6 +106,14 @@ void* client_thread(void* arg)
 
 int main(void) 
 {
+    signal(SIGUSR1, sigusr1_handler);
+    FILE *pidf = fopen("server.pid", "w");
+    if (pidf) 
+    {
+        fprintf(pidf, "%d\n", getpid());
+        fclose(pidf);
+    }
+
     int server_fd, *client_fd;
     struct sockaddr_un addr;
 
@@ -132,6 +151,14 @@ int main(void)
         }
 
         pthread_detach(tid);
+
+        //Client handled
+        if (compact_requested) 
+        {
+            printf("[Server] Running compaction...\n");
+            compact();
+            compact_requested = 0;
+        }
     }
 
     close(server_fd);

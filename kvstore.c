@@ -11,6 +11,7 @@
 
 #define DATAFILE "data.db"
 
+//Get size of database in bytes
 void size_command(void)
 {
     pid_t pid = fork();
@@ -137,7 +138,7 @@ void set(const char *key, const char *value)
     close(fd);
 }
 
-
+//Get value from key in database
 void get(const char *key) 
 {
     char buf[1024];
@@ -195,4 +196,46 @@ void get(const char *key)
     fprintf(stderr, "Key not found\n");
     flock(fd, LOCK_UN); //Release lock
     close(fd);
+}
+
+//Rewrite database file without duplicate or deleted entries to save spac
+void compact(void) 
+{
+    FILE *src = fopen(DATAFILE, "r");
+    FILE *tmp = fopen("data.tmp", "w");
+    if(!src || !tmp) 
+    {
+        perror("compact fopen");
+        return;
+    }
+
+    char line[1024];
+    char seen_keys[1024][128];
+    int seen_count = 0;
+
+    while(fgets(line, sizeof(line), src)) 
+    {
+        char key[128], value[896];
+        if(sscanf(line, "%127[^:]:%895[^\n]", key, value) == 2) 
+        {
+            int found = 0;
+            for(int i = 0; i < seen_count; i++) 
+            {
+                if(strcmp(seen_keys[i], key) == 0) 
+                {
+                    found = 1;
+                    break;
+                }
+            }
+            if(!found) 
+            {
+                strcpy(seen_keys[seen_count++], key);
+                fprintf(tmp, "%s:%s\n", key, value);
+            }
+        }
+    }
+
+    fclose(src);
+    fclose(tmp);
+    rename("data.tmp", DATAFILE);
 }
