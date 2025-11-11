@@ -41,9 +41,6 @@ void handle_client(int client_fd)
         }
         buf[n] = '\0';
 
-        //Sleep to test multithreading
-        sleep(5);
-
         // Parse command
         char *cmd = strtok(buf, " \n");
         if(!cmd)
