@@ -311,3 +311,4 @@ void compact(void)
     fclose(tmp);
     rename("data.tmp", DATAFILE);
 }
+
