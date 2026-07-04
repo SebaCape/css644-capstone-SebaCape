@@ -198,7 +198,7 @@ void get(const char *key)
     close(fd);
 }
 
-//Rewrite database file without duplicate or deleted entries to save spac
+//Rewrite database file without duplicate or deleted entries to save space
 void compact(void) 
 {
     FILE *src = fopen(DATAFILE, "r");
