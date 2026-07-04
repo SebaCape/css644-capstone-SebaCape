@@ -58,81 +58,137 @@ void set(const char *key, const char *value)
         exit(1);
     }
 
-    //Read the whole file
-    off_t size = lseek(fd, 0, SEEK_END);
-    if(size == -1) 
-    { 
-        perror("lseek"); 
-        exit(1); 
-    }
-    lseek(fd, 0, SEEK_SET);
-
-    char *content = malloc(size + 1);
-    if(!content) 
-    { 
-        perror("malloc"); 
-        exit(1); 
-    }
-
-    ssize_t n = read(fd, content, size);
-    if(n < 0) 
-    { 
-        perror("read"); 
-        exit(1); 
-    }
-    content[n] = '\0';
-
-    //Build the new content
-    char buffer[1024];
-    int replaced = 0;
-    char *out = NULL;
-    size_t out_len = 0;
-
-    char *line = strtok(content, "\n");
-    while(line) 
+    //Read database using stream parsing
+    int src_fd = dup(fd);
+    if(src_fd < 0)
     {
-        char *colon = strchr(line, ':');
-        if(colon) 
-        {
-            *colon = '\0';
-            if(strcmp(line, key) == 0) 
-            {
-                //Replace value if it already exists
-                int len = asprintf(&out, "%s%s:%s\n", out ? out : "", key, value);
-                out_len = len;
-                replaced = 1;
-            } 
-            else 
-            {
-                int len = asprintf(&out, "%s%s:%s\n", out ? out : "", line, colon + 1);
-                out_len = len;
-            }
-        }
-        line = strtok(NULL, "\n");
-    }
-
-    // If key not found, append new entry
-    if(!replaced) 
-    {
-        int len = asprintf(&out, "%s%s:%s\n", out ? out : "", key, value);
-        out_len = len;
-    }
-
-    // Truncate and rewrite
-    if(ftruncate(fd, 0) == -1) 
-    {
-        perror("ftruncate");
+        perror("dup");
+        flock(fd, LOCK_UN);
+        close(fd);
         exit(1);
     }
-    lseek(fd, 0, SEEK_SET);
 
-    if(write(fd, out, out_len) != out_len) 
+    FILE *src = fdopen(src_fd, "r");
+    if(!src)
     {
-        perror("write");
+        perror("fdopen");
+        close(src_fd);
+        flock(fd, LOCK_UN);
+        close(fd);
+        exit(1);
     }
 
-    free(content);
-    free(out);
+    FILE *tmp = tmpfile();
+    if(!tmp)
+    {
+        perror("tmpfile");
+        fclose(src);
+        flock(fd, LOCK_UN);
+        close(fd);
+        exit(1);
+    }
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t line_len;
+    int replaced = 0;
+    size_t key_len = strlen(key);
+
+    while((line_len = getline(&line, &cap, src)) != -1)
+    {
+        char *colon = strchr(line, ':');
+        if(!colon)
+        {
+            if(fwrite(line, 1, (size_t)line_len, tmp) != (size_t)line_len)
+            {
+                perror("fwrite");
+                free(line);
+                fclose(tmp);
+                fclose(src);
+                flock(fd, LOCK_UN);
+                close(fd);
+                exit(1);
+            }
+            continue;
+        }
+
+        size_t current_key_len = (size_t)(colon - line);
+        if(current_key_len == key_len && strncmp(line, key, key_len) == 0)
+        {
+            if(!replaced)
+            {
+                fprintf(tmp, "%s:%s\n", key, value);
+                replaced = 1;
+            }
+            continue;
+        }
+
+        if(fwrite(line, 1, (size_t)line_len, tmp) != (size_t)line_len)
+        {
+            perror("fwrite");
+            free(line);
+            fclose(tmp);
+            fclose(src);
+            flock(fd, LOCK_UN);
+            close(fd);
+            exit(1);
+        }
+    }
+
+    free(line);
+
+    //Append key if not already present
+    if(!replaced)
+    {
+        fprintf(tmp, "%s:%s\n", key, value);
+    }
+
+    //Truncate and rewrite from temporary stream
+    if(ftruncate(fd, 0) == -1)
+    {
+        perror("ftruncate");
+        fclose(tmp);
+        fclose(src);
+        flock(fd, LOCK_UN);
+        close(fd);
+        exit(1);
+    }
+
+    if(lseek(fd, 0, SEEK_SET) == -1)
+    {
+        perror("lseek");
+        fclose(tmp);
+        fclose(src);
+        flock(fd, LOCK_UN);
+        close(fd);
+        exit(1);
+    }
+
+    rewind(tmp);
+    char buf[4096];
+    size_t nread;
+
+    while((nread = fread(buf, 1, sizeof(buf), tmp)) > 0)
+    {
+        size_t written = 0;
+        while(written < nread)
+        {
+            ssize_t nw = write(fd, buf + written, nread - written);
+            if(nw < 0)
+            {
+                perror("write");
+                fclose(tmp);
+                fclose(src);
+                flock(fd, LOCK_UN);
+                close(fd);
+                exit(1);
+            }
+            written += (size_t)nw;
+        }
+    }
+
+    fclose(tmp);
+    fclose(src);
 
     flock(fd, LOCK_UN);
     close(fd);
@@ -141,7 +197,6 @@ void set(const char *key, const char *value)
 //Get value from key in database
 void get(const char *key) 
 {
-    char buf[1024];
     int fd = open(DATAFILE, O_RDONLY);
 
     //Error opening file
@@ -151,46 +206,63 @@ void get(const char *key)
         exit(1); 
     }
 
-    //Acquire lock
-    if(flock(fd, LOCK_EX) == -1) 
+    //Acquire shared lock for read operations
+    if(flock(fd, LOCK_SH) == -1) 
     { 
-        perror("flock"); exit(1); 
+        perror("flock");
+        close(fd);
+        exit(1); 
     }
 
-    ssize_t n;
-    char line[1024];
-    size_t pos = 0;
-
-    //File parsing logic: check for new lines, colon separators, and null terminators to search for key
-    while((n = read(fd, buf, sizeof(buf))) > 0) 
+    //Read database line by line and match key
+    int src_fd = dup(fd);
+    if(src_fd < 0)
     {
-        for(int i = 0; i < n; i++) 
-        {
-            if(buf[i] == '\n') 
-            {
-                line[pos] = '\0';
-                char *colon = strchr(line, ':');
-
-                if(colon) 
-                {
-                    *colon = '\0'; //Sets colon to null terminator
-                    if(strcmp(line, key) == 0) 
-                    {
-                        printf("%s\n", colon + 1); //Return our value and exit
-                        close(fd);
-                        return;
-                    }
-                }
-                pos = 0; //Reset line position
-            }
-
-            //Iterating through line
-            else if(pos < sizeof(line) - 1) 
-            {
-                line[pos++] = buf[i];
-            }
-        }
+        perror("dup");
+        flock(fd, LOCK_UN);
+        close(fd);
+        exit(1);
     }
+
+    FILE *src = fdopen(src_fd, "r");
+    if(!src)
+    {
+        perror("fdopen");
+        close(src_fd);
+        flock(fd, LOCK_UN);
+        close(fd);
+        exit(1);
+    }
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t line_len;
+    size_t key_len = strlen(key);
+
+    while((line_len = getline(&line, &cap, src)) != -1)
+    {
+        char *colon = strchr(line, ':');
+        if(!colon)
+            continue;
+
+        size_t current_key_len = (size_t)(colon - line);
+        if(current_key_len != key_len || strncmp(line, key, key_len) != 0)
+            continue;
+
+        char *value = colon + 1;
+        if(line_len > 0 && value[line_len - (current_key_len + 1) - 1] == '\n')
+            value[line_len - (current_key_len + 1) - 1] = '\0';
+
+        printf("%s\n", value);
+        free(line);
+        fclose(src);
+        flock(fd, LOCK_UN);
+        close(fd);
+        return;
+    }
+
+    free(line);
+    fclose(src);
 
     //If not found
     fprintf(stderr, "Key not found\n");
